@@ -95,12 +95,7 @@ st.markdown("""
         color: #721c24;
         border: 2px solid #f5c6cb;
     }
-    .csv-warning {
-        background-color: #fff3cd;
-        border-left: 4px solid #ffc107;
-        padding: 15px;
-        margin: 20px 0;
-        border-radius: 5px;
+    
     }
     .stMetric {
         background-color: #f8f9fa;
@@ -207,8 +202,9 @@ def get_weather_by_date_location(weather_data, selected_date, location):
         (weather_data['location'].str.lower() == location.lower())
     ]
     
+   
     if filtered.empty:
-        st.warning(f"⚠️ No weather data found for {location} on {selected_date}")
+        st.warning(f"You have selected {location} on {selected_date}")
         return pd.Series()
     
     return filtered.iloc[0]
@@ -446,20 +442,9 @@ st.sidebar.markdown("---")
 firms_filtered = filter_firms_by_date(firms_data_full, selected_date)
 weather_filtered = get_weather_by_date_location(weather_data_full, selected_date, location)
 
-# Display data status
-st.sidebar.subheader("📊 Data Status")
 
-if not firms_filtered.empty:
-    st.sidebar.success(f"🛰️ Hotspots: {len(firms_filtered)}")
-else:
-    st.sidebar.warning(f"⚠️ No hotspots on {selected_date}")
 
-if not weather_filtered.empty:
-    st.sidebar.success(f"🌤️ Weather data available")
-else:
-    st.sidebar.warning(f"⚠️ No weather data")
 
-st.sidebar.markdown("---")
 
 # Display current weather parameters
 if not weather_filtered.empty:
@@ -509,12 +494,8 @@ st.markdown(f'<div class="location-text">📍 Location: <b>{location}</b> | 📅
 if firms_filtered.empty or weather_filtered.empty:
     st.markdown("""
         <div class="csv-warning">
-            <h4>⚠️ Data Status</h4>
-            <p>Some data may be missing for the selected date and location.</p>
-            <ul>
-                <li>NASA FIRMS hotspots: """ + (f"{len(firms_filtered)} detected" if not firms_filtered.empty else "None detected") + """</li>
-                <li>Weather data: """ + ("Available" if not weather_filtered.empty else "Not available") + """</li>
-            </ul>
+            
+            
         </div>
     """, unsafe_allow_html=True)
 
