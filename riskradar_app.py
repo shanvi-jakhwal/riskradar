@@ -4,6 +4,7 @@ from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 import numpy as np
 import pandas as pd
+import os
 
 # Page configuration
 st.set_page_config(
@@ -13,7 +14,17 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for styling
+# ============================================
+# CSV FILE PATHS - CHANGE THESE IF NEEDED
+# ============================================
+
+NASA_FIRMS_CSV = "nasa_firms_data.csv"
+WEATHER_DATA_CSV = "weather_data.csv"
+
+# ============================================
+# CUSTOM CSS STYLING
+# ============================================
+
 st.markdown("""
     <style>
     .main-card {
@@ -86,31 +97,84 @@ st.markdown("""
         color: #721c24;
         border: 2px solid #f5c6cb;
     }
+    .csv-warning {
+        background-color: #fff3cd;
+        border-left: 4px solid #ffc107;
+        padding: 15px;
+        margin: 20px 0;
+        border-radius: 5px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 # ============================================
-# CORE RISK CALCULATION LOGIC
+# DATA LOADING FUNCTIONS
 # ============================================
 
-def calculate_forest_fire_risk(temperature, humidity, wind_speed, dry_days, 
-                                ndvi=None, fire_count=None, distance_settlement=None, elevation=None):
+@st.cache_data
+def load_nasa_firms_data():
+    """Load NASA FIRMS CSV data"""
+    try:
+        df = pd.read_csv(NASA_FIRMS_CSV)
+        
+        required_columns = ['latitude', 'longitude', 'bright_t31', 'frp', 'daynight']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            st.error(f"❌ Missing columns in NASA FIRMS CSV: {missing_columns}")
+            return pd.DataFrame()
+        
+        return df
+        
+    except FileNotFoundError:
+        st.error(f"❌ NASA FIRMS CSV file not found: {NASA_FIRMS_CSV}")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Error loading NASA FIRMS data: {str(e)}")
+        return pd.DataFrame()
+
+@st.cache_data
+def load_weather_data():
+    """Load Weather CSV data"""
+    try:
+        df = pd.read_csv(WEATHER_DATA_CSV)
+        
+        required_columns = ['weather_type', 'wind_speed', 'precipitation', 'temperature']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            st.error(f"❌ Missing columns in Weather CSV: {missing_columns}")
+            return pd.Series()
+        
+        # Get most recent weather data (last row)
+        current_weather = df.iloc[-1]
+        return current_weather
+        
+    except FileNotFoundError:
+        st.error(f"❌ Weather CSV file not found: {WEATHER_DATA_CSV}")
+        return pd.Series()
+    except Exception as e:
+        st.error(f"❌ Error loading weather data: {str(e)}")
+        return pd.Series()
+
+# ============================================
+# RISK CALCULATION FROM WEATHER DATA
+# ============================================
+
+def calculate_risk_from_weather(weather_data):
     """
-    Core formula to calculate forest fire risk score (0-10)
-    
-    Args:
-        temperature: Temperature in Celsius
-        humidity: Relative humidity (0-100)
-        wind_speed: Wind speed in km/h
-        dry_days: Consecutive days without rain
-        ndvi: Vegetation index (-1 to 1) [optional]
-        fire_count: Historical fires in 5km radius [optional]
-        distance_settlement: Distance to settlement in km [optional]
-        elevation: Elevation in meters [optional]
-    
-    Returns:
-        risk_score: Float (0-10)
+    Calculate risk score based on weather CSV data
+    Uses: weather_type, wind_speed, precipitation, temperature
     """
+    
+    if weather_data.empty:
+        return 5.0  # Default moderate risk if no data
+    
+    # Extract weather parameters from CSV
+    temperature = float(weather_data['temperature'])
+    wind_speed = float(weather_data['wind_speed'])
+    precipitation = float(weather_data['precipitation'])
+    weather_type = str(weather_data['weather_type']).lower()
     
     # 1. Temperature Factor (0-1)
     if temperature < 25:
@@ -120,15 +184,7 @@ def calculate_forest_fire_risk(temperature, humidity, wind_speed, dry_days,
     else:
         temp_factor = (temperature - 25) / 15
     
-    # 2. Humidity Factor (0-1) - inverse relationship
-    if humidity >= 70:
-        humidity_factor = 0.0
-    elif humidity <= 20:
-        humidity_factor = 1.0
-    else:
-        humidity_factor = (70 - humidity) / 50
-    
-    # 3. Wind Speed Factor (0-1)
+    # 2. Wind Speed Factor (0-1)
     if wind_speed < 5:
         wind_factor = 0.2
     elif wind_speed >= 25:
@@ -136,219 +192,115 @@ def calculate_forest_fire_risk(temperature, humidity, wind_speed, dry_days,
     else:
         wind_factor = (wind_speed - 5) / 20
     
-    # 4. Precipitation Factor (0-1)
-    if dry_days < 7:
+    # 3. Precipitation Factor (0-1) - inverse relationship
+    if precipitation > 10:
         precip_factor = 0.0
-    elif dry_days >= 30:
+    elif precipitation <= 0:
         precip_factor = 1.0
     else:
-        precip_factor = dry_days / 30
+        precip_factor = (10 - precipitation) / 10
     
-    # 5. Vegetation Factor (0-1) [optional]
-    if ndvi is not None:
-        if ndvi < 0.2:
-            veg_factor = 0.0
-        elif 0.6 <= ndvi <= 0.9:
-            veg_factor = 1.0
-        else:
-            veg_factor = min(ndvi / 0.9, 1.0)
-    else:
-        veg_factor = 0.0
+    # 4. Weather Type Factor (0-1)
+    weather_risk = {
+        'clear': 0.8,
+        'sunny': 0.8,
+        'cloudy': 0.4,
+        'partly cloudy': 0.5,
+        'overcast': 0.3,
+        'rain': 0.0,
+        'drizzle': 0.2,
+        'thunderstorm': 0.1,
+        'fog': 0.3,
+        'mist': 0.3
+    }
+    weather_factor = weather_risk.get(weather_type, 0.5)
     
-    # 6. Historical Fire Factor (0-1) [optional]
-    if fire_count is not None:
-        if fire_count == 0:
-            hist_factor = 0.0
-        elif fire_count >= 10:
-            hist_factor = 1.0
-        else:
-            hist_factor = fire_count / 10
-    else:
-        hist_factor = 0.0
-    
-    # 7. Proximity to Settlement Factor (0-1) [optional]
-    if distance_settlement is not None:
-        if distance_settlement > 5:
-            proximity_factor = 0.0
-        elif distance_settlement <= 0.5:
-            proximity_factor = 1.0
-        else:
-            proximity_factor = (5 - distance_settlement) / 4.5
-    else:
-        proximity_factor = 0.0
-    
-    # 8. Elevation Factor (0-1) [optional]
-    if elevation is not None:
-        if elevation < 500:
-            elev_factor = 0.3
-        elif 500 <= elevation <= 1500:
-            elev_factor = 0.7
-        else:
-            elev_factor = 0.4
-    else:
-        elev_factor = 0.0
-    
-    # FINAL RISK SCORE CALCULATION
+    # FINAL RISK CALCULATION
+    # Weighted formula based on 4 weather parameters
     risk_score = (
-        0.25 * temp_factor +
-        0.20 * humidity_factor +
-        0.15 * wind_factor +
-        0.12 * precip_factor +
-        0.10 * veg_factor +
-        0.08 * hist_factor +
-        0.05 * proximity_factor +
-        0.05 * elev_factor
+        0.35 * temp_factor +
+        0.30 * wind_factor +
+        0.20 * precip_factor +
+        0.15 * weather_factor
     ) * 10
     
     return risk_score
 
-# Location coordinates database with environmental data
-LOCATION_COORDS = {
-    "California, USA": {
-        "lat": 36.7783,
-        "lon": -119.4179,
-        "temperature": 38.0,
-        "humidity": 25.0,
-        "wind_speed": 20.0,
-        "dry_days": 28,
-        "ndvi": 0.45,
-        "fire_count": 12,
-        "distance_settlement": 1.5,
-        "elevation": 500
-    },
-    "Patiala, Punjab": {
-        "lat": 30.3398,
-        "lon": 76.3869,
-        "temperature": 35.0,
-        "humidity": 45.0,
-        "wind_speed": 12.0,
-        "dry_days": 15,
-        "ndvi": 0.65,
-        "fire_count": 3,
-        "distance_settlement": 1.2,
-        "elevation": 250
-    },
-    "Dehradun, Uttarakhand": {
-        "lat": 30.3165,
-        "lon": 78.0322,
-        "temperature": 32.0,
-        "humidity": 55.0,
-        "wind_speed": 8.0,
-        "dry_days": 20,
-        "ndvi": 0.78,
-        "fire_count": 7,
-        "distance_settlement": 0.8,
-        "elevation": 640
-    },
-    "Nagpur, Maharashtra": {
-        "lat": 21.1458,
-        "lon": 79.0882,
-        "temperature": 38.0,
-        "humidity": 30.0,
-        "wind_speed": 15.0,
-        "dry_days": 25,
-        "ndvi": 0.55,
-        "fire_count": 5,
-        "distance_settlement": 2.5,
-        "elevation": 310
-    },
-    "Shimla, Himachal Pradesh": {
-        "lat": 31.1048,
-        "lon": 77.1734,
-        "temperature": 28.0,
-        "humidity": 60.0,
-        "wind_speed": 10.0,
-        "dry_days": 12,
-        "ndvi": 0.82,
-        "fire_count": 8,
-        "distance_settlement": 1.5,
-        "elevation": 2200
-    }
-}
+# ============================================
+# HEATMAP FROM NASA FIRMS DATA
+# ============================================
 
-def get_heatmap_data(location, risk_score):
+def create_heatmap_from_firms(firms_data):
     """
-    Generate simulated heatmap data based on location and risk score.
-    Later this will fetch real hotspot data from database.
-    Returns list of [latitude, longitude, intensity]
+    Create heatmap data from NASA FIRMS CSV
+    Uses: latitude, longitude, bright_t31, frp
     """
-    coords = LOCATION_COORDS[location]
-    base_lat = coords["lat"]
-    base_lon = coords["lon"]
     
-    # Generate random hotspots around the location
-    np.random.seed(42)  # For consistency
-    num_hotspots = int(15 + risk_score * 3)  # More hotspots for higher risk
+    if firms_data.empty:
+        # Return dummy data if CSV not loaded
+        return [[36.7783, -119.4179, 0.5]]
     
     heatmap_data = []
     
-    for _ in range(num_hotspots):
-        # Random offset within ~50km radius
-        lat_offset = np.random.uniform(-0.3, 0.3)
-        lon_offset = np.random.uniform(-0.3, 0.3)
+    # Process each hotspot from NASA FIRMS
+    for idx, row in firms_data.iterrows():
+        lat = float(row['latitude'])
+        lon = float(row['longitude'])
         
-        # Intensity scales with risk score
-        base_intensity = risk_score / 10.0
-        intensity = np.random.uniform(base_intensity * 0.5, base_intensity * 1.2)
-        intensity = min(intensity, 1.0)
+        # Calculate intensity from brightness and FRP
+        brightness = float(row['bright_t31'])
+        frp = float(row['frp'])
         
-        heatmap_data.append([
-            base_lat + lat_offset,
-            base_lon + lon_offset,
-            intensity
-        ])
+        # Normalize brightness (typically 300-400K range)
+        brightness_norm = (brightness - 300) / 100
+        brightness_norm = max(0, min(brightness_norm, 1))
+        
+        # Normalize FRP (typically 0-100 MW range)
+        frp_norm = frp / 100
+        frp_norm = max(0, min(frp_norm, 1))
+        
+        # Combined intensity (weighted average)
+        intensity = (0.6 * frp_norm + 0.4 * brightness_norm)
+        intensity = max(0.1, min(intensity, 1.0))
+        
+        heatmap_data.append([lat, lon, intensity])
     
     return heatmap_data
 
-def create_folium_map(location, risk_score, location_data):
-    """
-    Create Folium map with heatmap visualization
-    """
-    coords = LOCATION_COORDS[location]
+# ============================================
+# MAP CREATION
+# ============================================
+
+def create_california_map(firms_data, risk_score, weather_data):
+    """Create Folium map with NASA FIRMS heatmap overlay"""
+    
+    # California center coordinates
+    california_center = [36.7783, -119.4179]
     
     # Create base map
     m = folium.Map(
-        location=[coords["lat"], coords["lon"]],
-        zoom_start=9,
+        location=california_center,
+        zoom_start=6,
         tiles='OpenStreetMap'
     )
     
-    # Get heatmap data
-    heatmap_data = get_heatmap_data(location, risk_score)
+    # Add heatmap from NASA FIRMS data
+    heatmap_data = create_heatmap_from_firms(firms_data)
     
-    # Add heatmap layer
     HeatMap(
         heatmap_data,
         min_opacity=0.3,
-        max_opacity=0.8,
-        radius=25,
-        blur=20,
+        max_opacity=0.85,
+        radius=20,
+        blur=18,
         gradient={
-            0.0: 'green',
-            0.3: 'yellow',
-            0.5: 'orange',
-            0.7: 'red',
-            1.0: 'darkred'
+            0.0: '#00ff00',
+            0.3: '#ffff00',
+            0.5: '#ff9900',
+            0.7: '#ff0000',
+            1.0: '#8B0000'
         }
     ).add_to(m)
-    
-    # Add main location marker with popup
-    popup_html = f"""
-    <div style="font-family: Arial; font-size: 13px; min-width: 220px;">
-        <h4 style="margin: 0 0 8px 0; color: #333;">{location}</h4>
-        <hr style="margin: 5px 0; border: 0; border-top: 1px solid #ddd;">
-        <table style="width: 100%; font-size: 12px;">
-            <tr><td><b>Risk Score:</b></td><td>{risk_score:.2f}/10</td></tr>
-            <tr><td><b>Temperature:</b></td><td>{location_data['temperature']:.1f}°C</td></tr>
-            <tr><td><b>Humidity:</b></td><td>{location_data['humidity']:.1f}%</td></tr>
-            <tr><td><b>Wind Speed:</b></td><td>{location_data['wind_speed']:.1f} km/h</td></tr>
-            <tr><td><b>Dry Days:</b></td><td>{location_data['dry_days']}</td></tr>
-            <tr><td><b>NDVI:</b></td><td>{location_data['ndvi']:.2f}</td></tr>
-            <tr><td><b>Fire Count:</b></td><td>{location_data['fire_count']}</td></tr>
-            <tr><td><b>Elevation:</b></td><td>{location_data['elevation']}m</td></tr>
-        </table>
-    </div>
-    """
     
     # Determine marker color based on risk
     if risk_score <= 3:
@@ -358,78 +310,98 @@ def create_folium_map(location, risk_score, location_data):
     else:
         marker_color = 'red'
     
+    # Create popup with weather data
+    if not weather_data.empty:
+        popup_html = f"""
+        <div style="font-family: Arial; font-size: 13px; min-width: 220px;">
+            <h4 style="margin: 0 0 8px 0; color: #333;">California Fire Risk</h4>
+            <hr style="margin: 5px 0; border: 0; border-top: 1px solid #ddd;">
+            <table style="width: 100%; font-size: 12px;">
+                <tr><td><b>Risk Score:</b></td><td>{risk_score:.2f}/10</td></tr>
+                <tr><td><b>Temperature:</b></td><td>{weather_data['temperature']:.1f}°C</td></tr>
+                <tr><td><b>Wind Speed:</b></td><td>{weather_data['wind_speed']:.1f} km/h</td></tr>
+                <tr><td><b>Precipitation:</b></td><td>{weather_data['precipitation']:.1f} mm</td></tr>
+                <tr><td><b>Weather:</b></td><td>{weather_data['weather_type']}</td></tr>
+                <tr><td><b>Hotspots:</b></td><td>{len(firms_data)} detected</td></tr>
+            </table>
+        </div>
+        """
+    else:
+        popup_html = "<b>California</b><br>Weather data not available"
+    
+    # Add main marker
     folium.Marker(
-        location=[coords["lat"], coords["lon"]],
+        location=california_center,
         popup=folium.Popup(popup_html, max_width=280),
-        tooltip=f"{location} - Risk: {risk_score:.1f}/10",
-        icon=folium.Icon(color=marker_color, icon='info-sign')
+        tooltip=f"California - Risk: {risk_score:.1f}/10",
+        icon=folium.Icon(color=marker_color, icon='fire', prefix='fa')
     ).add_to(m)
     
     return m
 
-# ========== SIDEBAR CONTROLS ==========
+# ============================================
+# MAIN APPLICATION
+# ============================================
+
+# Sidebar
 st.sidebar.title("🎛️ RiskRadar Control Panel")
 st.sidebar.markdown("---")
 
-# Location selector
-location = st.sidebar.selectbox(
-    "📍 Select Monitoring Location",
-    options=list(LOCATION_COORDS.keys()),
-    index=0
-)
-
-# Get current location data
-current_data = LOCATION_COORDS[location]
+st.sidebar.subheader("📍 Monitoring Location")
+st.sidebar.info("**California, USA**")
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📊 Current Environmental Data")
 
-# Display real-time parameters (read-only)
-st.sidebar.metric("🌡️ Temperature", f"{current_data['temperature']:.1f}°C")
-st.sidebar.metric("💧 Humidity", f"{current_data['humidity']:.1f}%")
-st.sidebar.metric("💨 Wind Speed", f"{current_data['wind_speed']:.1f} km/h")
-st.sidebar.metric("☀️ Dry Days", f"{current_data['dry_days']} days")
+# Load CSV data
+st.sidebar.subheader("📊 Data Sources")
+
+firms_data = load_nasa_firms_data()
+weather_data = load_weather_data()
+
+# Display data status
+if not firms_data.empty:
+    st.sidebar.success(f"🛰️ NASA FIRMS: {len(firms_data)} hotspots")
+else:
+    st.sidebar.error("❌ NASA FIRMS data not loaded")
+
+if not weather_data.empty:
+    st.sidebar.success(f"🌤️ Weather data loaded")
+else:
+    st.sidebar.error("❌ Weather data not loaded")
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🌲 Advanced Parameters")
-st.sidebar.metric("🌿 NDVI", f"{current_data['ndvi']:.2f}")
-st.sidebar.metric("🔥 Historical Fires", f"{current_data['fire_count']} in 5km")
-st.sidebar.metric("🏘️ Settlement Distance", f"{current_data['distance_settlement']:.1f} km")
-st.sidebar.metric("⛰️ Elevation", f"{current_data['elevation']} m")
 
-st.sidebar.markdown("---")
-st.sidebar.info("💡 Real-time data from sensor network & satellite imagery")
+# Display current weather parameters
+if not weather_data.empty:
+    st.sidebar.subheader("📊 Current Weather Data")
+    st.sidebar.metric("🌡️ Temperature", f"{weather_data['temperature']:.1f}°C")
+    st.sidebar.metric("💨 Wind Speed", f"{weather_data['wind_speed']:.1f} km/h")
+    st.sidebar.metric("💧 Precipitation", f"{weather_data['precipitation']:.1f} mm")
+    st.sidebar.metric("☁️ Weather Type", weather_data['weather_type'])
+    
+    st.sidebar.markdown("---")
+    st.sidebar.info("💡 Real-time data from CSV files")
 
-# ========== RISK SCORE CALCULATION ==========
-# Calculate risk using the actual formula
-risk_score = calculate_forest_fire_risk(
-    temperature=current_data['temperature'],
-    humidity=current_data['humidity'],
-    wind_speed=current_data['wind_speed'],
-    dry_days=current_data['dry_days'],
-    ndvi=current_data['ndvi'],
-    fire_count=current_data['fire_count'],
-    distance_settlement=current_data['distance_settlement'],
-    elevation=current_data['elevation']
-)
+# Calculate risk score
+risk_score = calculate_risk_from_weather(weather_data)
 risk_score_rounded = round(risk_score)
 
-# ========== ZONE CLASSIFICATION ==========
+# Zone classification
 if risk_score <= 3:
     zone_name = "SAFE ZONE"
-    zone_color = "#28a745"  # Green
+    zone_color = "#28a745"
     alert_class = "alert-safe"
     alert_icon = "✅"
     alert_message = "LOW RISK – Conditions stable. Continue routine monitoring."
 elif risk_score <= 6:
     zone_name = "MODERATE RISK"
-    zone_color = "#fd7e14"  # Orange
+    zone_color = "#fd7e14"
     alert_class = "alert-moderate"
     alert_icon = "⚠️"
     alert_message = "MODERATE RISK – Increase monitoring frequency. Prepare response teams."
 else:
     zone_name = "DANGER ZONE"
-    zone_color = "#dc3545"  # Red
+    zone_color = "#dc3545"
     alert_class = "alert-danger"
     alert_icon = "🚨"
     alert_message = "HIGH FIRE RISK ALERT – Immediate surveillance required. Deploy patrol units and notify authorities immediately."
@@ -437,19 +409,32 @@ else:
 # ========== MAIN DASHBOARD UI ==========
 st.markdown('<div class="main-card">', unsafe_allow_html=True)
 
-# Blue header strip
+# Header
 st.markdown('<div class="header-strip">🔥 RiskRadar – Forest Fire Risk Monitoring & Early Warning System</div>', unsafe_allow_html=True)
 
-# Location text
-st.markdown(f'<div class="location-text">📍 Location: <b>{location}</b></div>', unsafe_allow_html=True)
+# Location
+st.markdown('<div class="location-text">📍 Location: <b>California, USA</b></div>', unsafe_allow_html=True)
 
-# Zone title with dynamic color
+# CSV File Status Warning
+if firms_data.empty or weather_data.empty:
+    st.markdown("""
+        <div class="csv-warning">
+            <h4>⚠️ CSV Files Required</h4>
+            <p><b>Please ensure these CSV files are in the same directory:</b></p>
+            <ul>
+                <li>📁 <code>nasa_firms_data.csv</code> - NASA FIRMS hotspot data</li>
+                <li>📁 <code>weather_data.csv</code> - California weather data</li>
+            </ul>
+        </div>
+    """, unsafe_allow_html=True)
+
+# Zone title
 st.markdown(f'<div class="zone-title" style="color: {zone_color};">{zone_name}</div>', unsafe_allow_html=True)
 
-# Risk score text
-st.markdown(f'<div class="risk-score-text">Risk Score: <b>{risk_score:.1f}/10</b></div>', unsafe_allow_html=True)
+# Risk score
+st.markdown(f'<div class="risk-score-text">Risk Score: <b>{risk_score:.2f}/10</b></div>', unsafe_allow_html=True)
 
-# Star rating container
+# Star rating
 star_display = "⭐" * risk_score_rounded + "☆" * (10 - risk_score_rounded)
 st.markdown(f'''
     <div class="star-container">
@@ -459,15 +444,15 @@ st.markdown(f'''
     </div>
 ''', unsafe_allow_html=True)
 
-# ========== HEATMAP VISUALIZATION ==========
-st.markdown("### 🗺️ Fire Risk Heatmap - Live Hotspot Detection")
+# Heatmap visualization
+st.markdown("### 🗺️ NASA FIRMS Fire Risk Heatmap - Live Hotspot Detection")
 st.markdown("---")
 
-# Create and render Folium map with current data
-folium_map = create_folium_map(location, risk_score, current_data)
-st_folium(folium_map, width=800, height=500)
+# Create and render map
+california_map = create_california_map(firms_data, risk_score, weather_data)
+st_folium(california_map, width=800, height=500)
 
-# ========== ALERT SECTION ==========
+# Alert section
 st.markdown(f'''
     <div class="alert-box {alert_class}">
         {alert_icon} {alert_message}
@@ -476,10 +461,29 @@ st.markdown(f'''
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ========== FOOTER ==========
+# Footer
 st.markdown("---")
 st.markdown("""
     <div style="text-align: center; color: #666; padding: 20px;">
-        <small>RiskRadar v2.0 Production | Real-time Forest Fire Risk Assessment | Data Sources: Satellite Imagery, Weather Stations, Sensor Network | © 2026</small>
+        <small>RiskRadar v2.0 Production | Real-time Forest Fire Risk Assessment | Data Sources: NASA FIRMS, Weather Stations | © 2026</small>
     </div>
 """, unsafe_allow_html=True)
+
+# Debug Information
+with st.expander("🔧 Debug Information - CSV Data Preview"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("NASA FIRMS Data Sample")
+        if not firms_data.empty:
+            st.dataframe(firms_data.head(10))
+            st.info(f"Total hotspots: {len(firms_data)}")
+        else:
+            st.warning("No NASA FIRMS data loaded")
+    
+    with col2:
+        st.subheader("Weather Data")
+        if not weather_data.empty:
+            st.json(weather_data.to_dict())
+        else:
+            st.warning("No weather data loaded")
