@@ -404,7 +404,7 @@ firms_data_full = load_nasa_firms_data()
 weather_data_full = load_weather_data()
 
 # ========== SIDEBAR ==========
-st.sidebar.title("🎛️ RiskRadar Control Panel")
+st.sidebar.title(" RiskRadar Control Panel")
 st.sidebar.markdown("---")
 
 # 🔴 LOCATION DROPDOWN
