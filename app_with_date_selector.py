@@ -132,7 +132,7 @@ def load_nasa_firms_data():
             return pd.DataFrame()
         
         # Convert date column to datetime
-        df['acq_date'] = pd.to_datetime(df['acq_date'])
+        df['acq_date'] = pd.to_datetime(df['acq_date'], format="%d-%m-%Y", errors="coerce")
         
         st.success(f"✅ NASA FIRMS data loaded: {len(df)} total hotspots")
         return df
@@ -163,7 +163,7 @@ def load_weather_data():
             return pd.DataFrame()
         
         # Convert date column to datetime
-        df['date'] = pd.to_datetime(df['date'])
+        df['date'] = pd.to_datetime(df['date'], format="%d-%m-%Y", errors="coerce")
         
         st.success(f"✅ Weather data loaded: {len(df)} records")
         return df
